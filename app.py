@@ -20,6 +20,7 @@ import time
 
 BASE_DIR = Path(__file__).resolve().parent
 DOWNLOAD_DIR = BASE_DIR / "downloads"
+COOKIES_FILE = Path("/etc/secrets/cookies.txt")  # Render's secret file path
 
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
@@ -38,6 +39,19 @@ downloads = {}
 # =========================================================
 # Helpers
 # =========================================================
+
+def get_cookie_file():
+    """Return the cookie file path if it exists, otherwise None."""
+    cookies_path = Path("/etc/secrets/cookies.txt")
+    if cookies_path.exists():
+        return str(cookies_path)
+    # Optional: Check for local development file
+    local_cookies = BASE_DIR / "cookies.txt"
+    if local_cookies.exists():
+        return str(local_cookies)
+    return None
+
+cookiefile = get_cookie_file(),
 
 def cleanup_old_files():
 
@@ -304,6 +318,8 @@ def perform_download(
 
                 "ca_certs": certifi.where(),
 
+                "cookiefile": get_cookie_file(),
+
                 "progress_hooks": [
                     progress_hook(download_id)
                 ],
@@ -337,6 +353,8 @@ def perform_download(
                 "no_warnings": True,
 
                 "ca_certs": certifi.where(),
+
+                "cookiefile": get_cookie_file(),
 
                 "progress_hooks": [
                     progress_hook(download_id)
