@@ -41,17 +41,47 @@ downloads = {}
 # =========================================================
 
 def get_cookie_file():
-    """Return the cookie file path if it exists, otherwise None."""
-    cookies_path = Path("/etc/secrets/cookies.txt")
-    if cookies_path.exists():
-        return str(cookies_path)
-    # Optional: Check for local development file
-    local_cookies = BASE_DIR / "cookies.txt"
-    if local_cookies.exists():
-        return str(local_cookies)
+    """Return validated cookie file path or None if invalid."""
+    # Check possible cookie file locations
+    possible_paths = [
+        Path("/etc/secrets/cookies.txt"),  # Render secrets
+        BASE_DIR / "cookies.txt",           # Local development
+    ]
+    
+    for cookie_path in possible_paths:
+        if not cookie_path.exists():
+            continue
+            
+        try:
+            # Read and validate the cookie file
+            with open(cookie_path, 'r', encoding='utf-8') as f:
+                first_line = f.readline().strip()
+                content = f.read().strip()
+                
+                # Check if it's in Netscape format
+                if not (first_line.startswith('# HTTP Cookie File') or 
+                        first_line.startswith('# Netscape HTTP Cookie File')):
+                    print(f"[COOKIE] WARNING: {cookie_path} is not in Netscape format")
+                    continue
+                
+                if not content:
+                    print(f"[COOKIE] WARNING: {cookie_path} is empty")
+                    continue
+                
+                # Check for essential YouTube cookies
+                if 'youtube.com' not in content.lower():
+                    print(f"[COOKIE] WARNING: {cookie_path} doesn't contain YouTube cookies")
+                    continue
+                
+                print(f"[COOKIE] Successfully validated: {cookie_path}")
+                return str(cookie_path)
+                
+        except Exception as e:
+            print(f"[COOKIE] Error reading {cookie_path}: {e}")
+            continue
+    
+    print("[COOKIE] No valid cookie file found")
     return None
-
-cookiefile = get_cookie_file(),
 
 def cleanup_old_files():
 
@@ -108,11 +138,18 @@ def get_video_info(url: str):
         "no_warnings": True,
         "skip_download": True,
         "noplaylist": True,
+        # Add cookies to info extraction too
+        "cookiefile": get_cookie_file(),
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "web"],  # Try different clients
+                "skip": ["hls", "dash"],  # Skip problematic formats
+            }
+        }
     }
-
     with yt_dlp.YoutubeDL(options) as ydl:
         return ydl.extract_info(url, download=False)
-
 
 def format_duration(seconds):
     if not seconds:
@@ -281,49 +318,51 @@ def progress_hook(download_id):
 
     return hook
 
-def perform_download(
-    download_id,
-    url,
-    media_type,
-    quality
-):
-
+def perform_download(download_id, url, media_type, quality):
     try:
-
-        output_template = str(
-            DOWNLOAD_DIR / f"{download_id}.%(ext)s"
-        )
-
-        # =====================================================
-        # Initial state
-        # =====================================================
-
+        output_template = str(DOWNLOAD_DIR / f"{download_id}.%(ext)s")
+        
         downloads[download_id].update({
             "status": "starting",
             "progress": 0,
         })
-
+        
+        # Get validated cookie file
+        cookie_file = get_cookie_file()
+        
+        # Common options for both audio and video
+        base_opts = {
+            "outtmpl": output_template,
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            "ca_certs": certifi.where(),
+            "cookiefile": cookie_file,
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "progress_hooks": [progress_hook(download_id)],
+            # Anti-bot detection options
+            "sleep_interval": 5,  # Wait 5 seconds between requests
+            "max_sleep_interval": 10,
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["android", "web"],
+                    "skip": ["hls", "dash"],
+                }
+            },
+            # Additional headers to mimic a real browser
+            "headers": {
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1",
+            }
+        }
+        
         if media_type == "audio":
-
             ydl_opts = {
+                **base_opts,
                 "format": "bestaudio/best",
-
-                "outtmpl": output_template,
-
-                "noplaylist": True,
-
-                "quiet": True,
-
-                "no_warnings": True,
-
-                "ca_certs": certifi.where(),
-
-                "cookiefile": get_cookie_file(),
-
-                "progress_hooks": [
-                    progress_hook(download_id)
-                ],
-
                 "postprocessors": [
                     {
                         "key": "FFmpegExtractAudio",
@@ -332,92 +371,44 @@ def perform_download(
                     }
                 ],
             }
-
         else:
-
             ydl_opts = {
-                "format": (
-                    f"bestvideo[height<={quality}]"
-                    f"+bestaudio/"
-                    f"best[height<={quality}]"
-                ),
-
-                "outtmpl": output_template,
-
+                **base_opts,
+                "format": f"bestvideo[height<={quality}]+bestaudio/best[height<={quality}]",
                 "merge_output_format": "mp4",
-
-                "noplaylist": True,
-
-                "quiet": True,
-
-                "no_warnings": True,
-
-                "ca_certs": certifi.where(),
-
-                "cookiefile": get_cookie_file(),
-
-                "progress_hooks": [
-                    progress_hook(download_id)
-                ],
             }
-
-
+        
+        # Debug: Print cookie status
+        print(f"[DOWNLOAD] Cookie file used: {cookie_file}")
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-
-            info = ydl.extract_info(
-                url,
-                download=True
-            )
-
-            # =============================================
-            # Download itself is finished.
-            # FFmpeg/post-processing may still be running.
-            # =============================================
-
+            info = ydl.extract_info(url, download=True)
+            
             downloads[download_id].update({
                 "status": "processing",
                 "progress": 99,
             })
-
+            
             filename = ydl.prepare_filename(info)
-
-
-        # -----------------------------------------
+        
         # Determine final filename
-        # -----------------------------------------
-
         if media_type == "audio":
-
-            filename = str(
-                Path(filename).with_suffix(".mp3")
-            )
-
+            filename = str(Path(filename).with_suffix(".mp3"))
         else:
-
-            filename = str(
-                Path(filename).with_suffix(".mp4")
-            )
-
-
+            filename = str(Path(filename).with_suffix(".mp4"))
+        
         file_path = Path(filename)
-
-
         if not file_path.exists():
-
-            raise Exception(
-                "Downloaded file was not found."
-            )
-
-
+            raise Exception("Downloaded file was not found.")
+        
         downloads[download_id].update({
             "status": "completed",
             "progress": 100,
             "filename": file_path.name,
         })
-
-
+        
     except Exception as e:
-
+        print(f"[DOWNLOAD ERROR] {str(e)}")
         downloads[download_id].update({
             "status": "error",
             "error": str(e),
@@ -566,14 +557,15 @@ def download_status(download_id):
 # Run
 # =========================================================
 
-cleanup_thread = threading.Thread(
-    target=cleanup_old_files,
-    daemon=True,
-)
-
-cleanup_thread.start()
-
 if __name__ == "__main__":
+
+    cleanup_thread = threading.Thread(
+        target=cleanup_old_files,
+        daemon=True,
+    )
+
+    cleanup_thread.start()
+
     app.run(
         host="0.0.0.0",
         port=5000,
