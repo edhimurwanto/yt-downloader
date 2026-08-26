@@ -3,51 +3,38 @@ import tempfile
 import shutil
 import uuid
 import threading
-
 from pathlib import Path
-
-from flask import (
-    Flask,
-    jsonify,
-    render_template,
-    request,
-    send_from_directory,
-    Response,
-    stream_with_context,
-)
-
+from flask import Flask, jsonify, render_template, request, send_from_directory
 import yt_dlp
 import certifi
 import time
+import logging
 
+# =========================================================
+# Configuration
+# =========================================================
 BASE_DIR = Path(__file__).resolve().parent
 DOWNLOAD_DIR = BASE_DIR / "downloads"
-COOKIES_FILE = Path("/etc/secrets/cookies.txt")  # Render's secret file path
-
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
-# =========================================================
-# Download Cleanup Configuration
-# =========================================================
-
 FILE_EXPIRATION_HOURS = 3
-
 CLEANUP_INTERVAL_SECONDS = 10 * 60  # 10 minutes
 
-app = Flask(__name__)
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
+app = Flask(__name__)
 downloads = {}
 
 # =========================================================
-# Helpers
+# Cookie Helper with Comprehensive Validation
 # =========================================================
-
 def get_cookie_file():
     """
-    Return a path to a writable cookie file.
+    Return a path to a writable, validated cookie file.
     Copies from read-only secrets location if needed.
     """
-    # Check possible source locations
     source_paths = [
         Path("/etc/secrets/cookies.txt"),  # Render secrets (read-only)
         BASE_DIR / "cookies.txt",           # Local development
@@ -58,124 +45,111 @@ def get_cookie_file():
             continue
             
         try:
-            # Validate the cookie file first
+            # Read and validate the cookie file
             with open(source_path, 'r', encoding='utf-8') as f:
-                first_line = f.readline().strip()
-                content = f.read().strip()
+                lines = f.readlines()
                 
+                if not lines:
+                    logger.warning(f"[COOKIE] {source_path} is empty")
+                    continue
+                
+                first_line = lines[0].strip()
                 if not (first_line.startswith('# HTTP Cookie File') or 
                         first_line.startswith('# Netscape HTTP Cookie File')):
-                    print(f"[COOKIE] WARNING: {source_path} is not in Netscape format")
+                    logger.warning(f"[COOKIE] {source_path} is not in Netscape format")
                     continue
-                    
-                if not content:
-                    print(f"[COOKIE] WARNING: {source_path} is empty")
+                
+                # Check for essential YouTube cookies
+                content = ''.join(lines).lower()
+                if 'youtube.com' not in content:
+                    logger.warning(f"[COOKIE] {source_path} doesn't contain YouTube cookies")
                     continue
-                    
-                if 'youtube.com' not in content.lower():
-                    print(f"[COOKIE] WARNING: {source_path} doesn't contain YouTube cookies")
-                    continue
+                
+                # Check for essential session cookies
+                has_visitor = any('visitor_info1_live' in line.lower() for line in lines)
+                if not has_visitor:
+                    logger.warning(f"[COOKIE] {source_path} missing VISITOR_INFO1_LIVE cookie")
+                    # Continue anyway - might still work
+                
+                logger.info(f"[COOKIE] Successfully validated: {source_path}")
+                logger.info(f"[COOKIE] Cookie count: {len([l for l in lines if l.strip() and not l.startswith('#')])}")
             
-            # If we're on Render (source is in /etc/secrets/), copy to writable location
+            # If on Render, copy to writable location
             if str(source_path).startswith('/etc/secrets/'):
-                # Create a writable copy in the downloads directory
                 writable_path = DOWNLOAD_DIR / "cookies.txt"
-                
-                # Copy the file
                 shutil.copy2(source_path, writable_path)
-                
-                # Make it writable (just in case)
                 writable_path.chmod(0o644)
-                
-                print(f"[COOKIE] Copied from {source_path} to {writable_path}")
+                logger.info(f"[COOKIE] Copied to writable: {writable_path}")
                 return str(writable_path)
             else:
-                # Local file - use it directly if it's writable
-                print(f"[COOKIE] Using local file: {source_path}")
+                logger.info(f"[COOKIE] Using local file: {source_path}")
                 return str(source_path)
                 
         except Exception as e:
-            print(f"[COOKIE] Error processing {source_path}: {e}")
+            logger.error(f"[COOKIE] Error processing {source_path}: {e}")
             continue
     
-    print("[COOKIE] No valid cookie file found")
+    logger.warning("[COOKIE] No valid cookie file found")
     return None
 
+# =========================================================
+# Cleanup Function
+# =========================================================
 def cleanup_old_files():
-
     while True:
-
         try:
-
             now = time.time()
-
-            expiration_seconds = (
-                FILE_EXPIRATION_HOURS * 60 * 60
-            )
-
+            expiration_seconds = FILE_EXPIRATION_HOURS * 60 * 60
+            
             for file_path in DOWNLOAD_DIR.iterdir():
-
                 if not file_path.is_file():
                     continue
 
+                # Handle cookie file separately (clean up after 1 hour)
                 if file_path.name == "cookies.txt":
-                    # Check if it's older than 1 hour
-                    if (now - file_path.stat().st_mtime) > 3600:  # 1 hour
+                    if (now - file_path.stat().st_mtime) > 3600:
                         try:
                             file_path.unlink()
-                            print(f"[CLEANUP] Deleted old cookie file: {file_path.name}")
+                            logger.info(f"[CLEANUP] Deleted old cookie file")
                         except Exception as e:
-                            print(f"[CLEANUP] Failed to delete cookie file: {e}")
+                            logger.error(f"[CLEANUP] Failed to delete cookie file: {e}")
                     continue
 
-                file_age = (
-                    now - file_path.stat().st_mtime
-                )
-
+                # Clean up old download files
+                file_age = now - file_path.stat().st_mtime
                 if file_age > expiration_seconds:
-
                     try:
-
                         file_path.unlink()
-
-                        print(
-                            f"[CLEANUP] Deleted: "
-                            f"{file_path.name}"
-                        )
-
+                        logger.info(f"[CLEANUP] Deleted: {file_path.name}")
                     except Exception as e:
-
-                        print(
-                            f"[CLEANUP] Failed to delete "
-                            f"{file_path.name}: {e}"
-                        )
-
+                        logger.error(f"[CLEANUP] Failed to delete {file_path.name}: {e}")
+                        
         except Exception as e:
+            logger.error(f"[CLEANUP] Error: {e}")
+            
+        time.sleep(CLEANUP_INTERVAL_SECONDS)
 
-            print(
-                f"[CLEANUP] Error: {e}"
-            )
-
-        time.sleep(
-            CLEANUP_INTERVAL_SECONDS
-        )
-
+# =========================================================
+# Video Info Function
+# =========================================================
 def get_video_info(url: str):
+    cookie_file = get_cookie_file()
+    
     options = {
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
         "noplaylist": True,
-        # Add cookies to info extraction too
-        "cookiefile": get_cookie_file(),
+        "cookiefile": cookie_file,
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "web"],  # Try different clients
-                "skip": ["hls", "dash"],  # Skip problematic formats
+                "player_client": ["android", "web"],
+                "skip": ["hls", "dash"],
             }
         }
     }
+    
     with yt_dlp.YoutubeDL(options) as ydl:
         return ydl.extract_info(url, download=False)
 
@@ -184,168 +158,69 @@ def format_duration(seconds):
         return "Unknown"
 
     seconds = int(seconds)
-
     hours, remainder = divmod(seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
 
     if hours:
         return f"{hours}:{minutes:02d}:{seconds:02d}"
-
     return f"{minutes}:{seconds:02d}"
 
+# =========================================================
+# Progress Hook
+# =========================================================
 def progress_hook(download_id):
-
     def hook(data):
-
         download = downloads.get(download_id)
-
         if not download:
             return
 
         status = data.get("status")
 
-        # =====================================================
-        # Downloading
-        # =====================================================
-
         if status == "downloading":
-
-            downloaded = data.get(
-                "downloaded_bytes",
-                0
-            )
-
-            total = (
-                data.get("total_bytes")
-                or data.get("total_bytes_estimate")
-            )
-
-            filename = data.get(
-                "filename"
-            )
-
-            # ---------------------------------------------
-            # Each downloaded file/stream gets its own ID
-            # ---------------------------------------------
+            downloaded = data.get("downloaded_bytes", 0)
+            total = data.get("total_bytes") or data.get("total_bytes_estimate")
+            filename = data.get("filename")
 
             if filename:
-
-                streams = download.setdefault(
-                    "streams",
-                    {}
-                )
-
+                streams = download.setdefault("streams", {})
                 streams[filename] = {
                     "downloaded": downloaded,
                     "total": total or 0,
                 }
 
-            # ---------------------------------------------
             # Calculate overall progress
-            # ---------------------------------------------
-
-            streams = download.get(
-                "streams",
-                {}
-            )
-
-            total_downloaded = 0
-            total_size = 0
-
-            for stream in streams.values():
-
-                total_downloaded += (
-                    stream.get(
-                        "downloaded",
-                        0
-                    )
-                )
-
-                total_size += (
-                    stream.get(
-                        "total",
-                        0
-                    )
-                )
+            streams = download.get("streams", {})
+            total_downloaded = sum(s.get("downloaded", 0) for s in streams.values())
+            total_size = sum(s.get("total", 0) for s in streams.values())
 
             if total_size > 0:
-
-                progress = (
-                    total_downloaded
-                    / total_size
-                    * 100
-                )
-
-                progress = min(
-                    progress,
-                    99
-                )
-
+                progress = min((total_downloaded / total_size * 100), 99)
             else:
+                progress = download.get("progress", 0)
 
-                progress = download.get(
-                    "progress",
-                    0
-                )
-
-            # ---------------------------------------------
             # Never allow progress to go backwards
-            # ---------------------------------------------
-
-            previous_progress = download.get(
-                "progress",
-                0
-            )
-
-            progress = max(
-                progress,
-                previous_progress
-            )
+            previous_progress = download.get("progress", 0)
+            progress = max(progress, previous_progress)
 
             downloads[download_id].update({
-
                 "status": "downloading",
-
-                "progress": round(
-                    progress,
-                    1
-                ),
-
-                "downloaded_bytes":
-                    total_downloaded,
-
-                "total_bytes":
-                    total_size,
-
-                "speed":
-                    data.get("speed"),
-
-                "eta":
-                    data.get("eta"),
-
+                "progress": round(progress, 1),
+                "downloaded_bytes": total_downloaded,
+                "total_bytes": total_size,
+                "speed": data.get("speed"),
+                "eta": data.get("eta"),
             })
 
-
-        # =====================================================
-        # One stream/file finished
-        # =====================================================
-
         elif status == "finished":
-
-            # Do NOT set progress to 100 here.
-            #
-            # Another stream may still need to download.
-            #
-            # yt-dlp may call this multiple times.
-
             downloads[download_id].update({
-
                 "status": "processing",
-
             })
 
     return hook
 
+# =========================================================
+# Main Download Function
+# =========================================================
 def perform_download(download_id, url, media_type, quality):
     try:
         output_template = str(DOWNLOAD_DIR / f"{download_id}.%(ext)s")
@@ -355,10 +230,11 @@ def perform_download(download_id, url, media_type, quality):
             "progress": 0,
         })
         
-        # Get writable cookie file
+        # Get validated cookie file
         cookie_file = get_cookie_file()
+        logger.info(f"[DOWNLOAD] Cookie file: {cookie_file}")
         
-        # Base options (same as before)
+        # Base options
         base_opts = {
             "outtmpl": output_template,
             "noplaylist": True,
@@ -408,17 +284,13 @@ def perform_download(download_id, url, media_type, quality):
             
             format_spec = quality_map.get(quality, "bestvideo+bestaudio/best")
             
-            # Alternative: Try multiple fallbacks
-            # format_spec = f"bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best"
-            
             ydl_opts = {
                 **base_opts,
                 "format": format_spec,
                 "merge_output_format": "mp4",
             }
         
-        print(f"[DOWNLOAD] Using format: {ydl_opts.get('format', 'default')}")
-        print(f"[DOWNLOAD] Cookie file: {cookie_file}")
+        logger.info(f"[DOWNLOAD] Using format: {ydl_opts.get('format', 'default')}")
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -446,31 +318,26 @@ def perform_download(download_id, url, media_type, quality):
             "filename": file_path.name,
         })
         
+        logger.info(f"[DOWNLOAD] Completed: {file_path.name}")
+        
     except Exception as e:
-        print(f"[DOWNLOAD ERROR] {str(e)}")
+        logger.error(f"[DOWNLOAD ERROR] {str(e)}")
         downloads[download_id].update({
             "status": "error",
             "error": str(e),
         })
 
 # =========================================================
-# Pages
+# Routes
 # =========================================================
 
 @app.get("/")
 def index():
     return render_template("index.html")
 
-
-# =========================================================
-# API: Get Video Information
-# =========================================================
-
 @app.post("/api/info")
 def video_info():
-
     data = request.get_json(silent=True) or {}
-
     url = data.get("url", "").strip()
 
     if not url:
@@ -480,9 +347,7 @@ def video_info():
         }), 400
 
     try:
-
         info = get_video_info(url)
-
         return jsonify({
             "success": True,
             "video": {
@@ -493,31 +358,21 @@ def video_info():
                 "channel": info.get("channel"),
                 "channel_id": info.get("channel_id"),
                 "duration": info.get("duration"),
-                "duration_formatted": format_duration(
-                    info.get("duration")
-                ),
+                "duration_formatted": format_duration(info.get("duration")),
                 "view_count": info.get("view_count"),
                 "webpage_url": info.get("webpage_url"),
             }
         })
-
     except Exception as e:
-
+        logger.error(f"[API ERROR] {str(e)}")
         return jsonify({
             "success": False,
             "error": str(e)
         }), 400
 
-
-# =========================================================
-# API: Download
-# =========================================================
-
 @app.post("/api/download")
 def download_video():
-
     data = request.get_json(silent=True) or {}
-
     url = data.get("url", "").strip()
     media_type = data.get("type", "video")
     quality = data.get("quality", "720")
@@ -535,7 +390,6 @@ def download_video():
         }), 400
 
     download_id = uuid.uuid4().hex
-
     downloads[download_id] = {
         "status": "starting",
         "progress": 0,
@@ -546,15 +400,9 @@ def download_video():
 
     thread = threading.Thread(
         target=perform_download,
-        args=(
-            download_id,
-            url,
-            media_type,
-            quality,
-        ),
+        args=(download_id, url, media_type, quality),
         daemon=True,
     )
-
     thread.start()
 
     return jsonify({
@@ -562,13 +410,8 @@ def download_video():
         "download_id": download_id,
     })
 
-# =========================================================
-# Download File
-# =========================================================
-
 @app.get("/download/<filename>")
 def download_file(filename):
-
     return send_from_directory(
         DOWNLOAD_DIR,
         filename,
@@ -577,11 +420,8 @@ def download_file(filename):
 
 @app.get("/api/download/<download_id>/status")
 def download_status(download_id):
-
     download = downloads.get(download_id)
-
     if not download:
-
         return jsonify({
             "success": False,
             "error": "Download not found."
@@ -593,18 +433,49 @@ def download_status(download_id):
     })
 
 # =========================================================
+# Debug Endpoint - Check Cookie Status
+# =========================================================
+@app.get("/api/debug/cookie")
+def debug_cookie():
+    """Debug endpoint to check cookie file status."""
+    cookie_file = get_cookie_file()
+    if not cookie_file:
+        return jsonify({
+            "success": False,
+            "error": "No cookie file found"
+        }), 404
+    
+    try:
+        with open(cookie_file, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+            return jsonify({
+                "success": True,
+                "file_path": cookie_file,
+                "total_lines": len(lines),
+                "format_valid": any(lines[0].strip().startswith('#') for lines in lines if lines),
+                "has_youtube_cookies": any('youtube.com' in line.lower() for line in lines),
+                "has_visitor_cookie": any('visitor_info1_live' in line.lower() for line in lines),
+                "preview": lines[:5] if len(lines) >= 5 else lines
+            })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+# =========================================================
 # Run
 # =========================================================
 
 if __name__ == "__main__":
-
+    # Start cleanup thread
     cleanup_thread = threading.Thread(
         target=cleanup_old_files,
         daemon=True,
     )
-
     cleanup_thread.start()
-
+    
+    logger.info("Starting Flask application...")
     app.run(
         host="0.0.0.0",
         port=5000,
