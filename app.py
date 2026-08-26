@@ -16,12 +16,20 @@ from flask import (
 
 import yt_dlp
 import certifi
+import time
 
 BASE_DIR = Path(__file__).resolve().parent
 DOWNLOAD_DIR = BASE_DIR / "downloads"
 
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
+# =========================================================
+# Download Cleanup Configuration
+# =========================================================
+
+FILE_EXPIRATION_HOURS = 3
+
+CLEANUP_INTERVAL_SECONDS = 10 * 60  # 10 minutes
 
 app = Flask(__name__)
 
@@ -30,6 +38,55 @@ downloads = {}
 # =========================================================
 # Helpers
 # =========================================================
+
+def cleanup_old_files():
+
+    while True:
+
+        try:
+
+            now = time.time()
+
+            expiration_seconds = (
+                FILE_EXPIRATION_HOURS * 60 * 60
+            )
+
+            for file_path in DOWNLOAD_DIR.iterdir():
+
+                if not file_path.is_file():
+                    continue
+
+                file_age = (
+                    now - file_path.stat().st_mtime
+                )
+
+                if file_age > expiration_seconds:
+
+                    try:
+
+                        file_path.unlink()
+
+                        print(
+                            f"[CLEANUP] Deleted: "
+                            f"{file_path.name}"
+                        )
+
+                    except Exception as e:
+
+                        print(
+                            f"[CLEANUP] Failed to delete "
+                            f"{file_path.name}: {e}"
+                        )
+
+        except Exception as e:
+
+            print(
+                f"[CLEANUP] Error: {e}"
+            )
+
+        time.sleep(
+            CLEANUP_INTERVAL_SECONDS
+        )
 
 def get_video_info(url: str):
     options = {
@@ -61,34 +118,151 @@ def progress_hook(download_id):
 
     def hook(data):
 
+        download = downloads.get(download_id)
+
+        if not download:
+            return
+
         status = data.get("status")
+
+        # =====================================================
+        # Downloading
+        # =====================================================
 
         if status == "downloading":
 
-            downloaded = data.get("downloaded_bytes", 0)
-            total = data.get("total_bytes") or data.get(
-                "total_bytes_estimate"
+            downloaded = data.get(
+                "downloaded_bytes",
+                0
             )
 
-            if total:
-                progress = downloaded / total * 100
+            total = (
+                data.get("total_bytes")
+                or data.get("total_bytes_estimate")
+            )
+
+            filename = data.get(
+                "filename"
+            )
+
+            # ---------------------------------------------
+            # Each downloaded file/stream gets its own ID
+            # ---------------------------------------------
+
+            if filename:
+
+                streams = download.setdefault(
+                    "streams",
+                    {}
+                )
+
+                streams[filename] = {
+                    "downloaded": downloaded,
+                    "total": total or 0,
+                }
+
+            # ---------------------------------------------
+            # Calculate overall progress
+            # ---------------------------------------------
+
+            streams = download.get(
+                "streams",
+                {}
+            )
+
+            total_downloaded = 0
+            total_size = 0
+
+            for stream in streams.values():
+
+                total_downloaded += (
+                    stream.get(
+                        "downloaded",
+                        0
+                    )
+                )
+
+                total_size += (
+                    stream.get(
+                        "total",
+                        0
+                    )
+                )
+
+            if total_size > 0:
+
+                progress = (
+                    total_downloaded
+                    / total_size
+                    * 100
+                )
+
+                progress = min(
+                    progress,
+                    99
+                )
+
             else:
-                progress = 0
+
+                progress = download.get(
+                    "progress",
+                    0
+                )
+
+            # ---------------------------------------------
+            # Never allow progress to go backwards
+            # ---------------------------------------------
+
+            previous_progress = download.get(
+                "progress",
+                0
+            )
+
+            progress = max(
+                progress,
+                previous_progress
+            )
 
             downloads[download_id].update({
+
                 "status": "downloading",
-                "progress": round(progress, 1),
-                "downloaded_bytes": downloaded,
-                "total_bytes": total,
-                "speed": data.get("speed"),
-                "eta": data.get("eta"),
+
+                "progress": round(
+                    progress,
+                    1
+                ),
+
+                "downloaded_bytes":
+                    total_downloaded,
+
+                "total_bytes":
+                    total_size,
+
+                "speed":
+                    data.get("speed"),
+
+                "eta":
+                    data.get("eta"),
+
             })
+
+
+        # =====================================================
+        # One stream/file finished
+        # =====================================================
 
         elif status == "finished":
 
+            # Do NOT set progress to 100 here.
+            #
+            # Another stream may still need to download.
+            #
+            # yt-dlp may call this multiple times.
+
             downloads[download_id].update({
+
                 "status": "processing",
-                "progress": 100,
+
             })
 
     return hook
@@ -105,6 +279,15 @@ def perform_download(
         output_template = str(
             DOWNLOAD_DIR / f"{download_id}.%(ext)s"
         )
+
+        # =====================================================
+        # Initial state
+        # =====================================================
+
+        downloads[download_id].update({
+            "status": "starting",
+            "progress": 0,
+        })
 
         if media_type == "audio":
 
@@ -167,6 +350,16 @@ def perform_download(
                 url,
                 download=True
             )
+
+            # =============================================
+            # Download itself is finished.
+            # FFmpeg/post-processing may still be running.
+            # =============================================
+
+            downloads[download_id].update({
+                "status": "processing",
+                "progress": 99,
+            })
 
             filename = ydl.prepare_filename(info)
 
@@ -300,6 +493,7 @@ def download_video():
         "progress": 0,
         "filename": None,
         "error": None,
+        "streams": {},
     }
 
     thread = threading.Thread(
@@ -353,6 +547,13 @@ def download_status(download_id):
 # =========================================================
 # Run
 # =========================================================
+
+cleanup_thread = threading.Thread(
+    target=cleanup_old_files,
+    daemon=True,
+)
+
+cleanup_thread.start()
 
 if __name__ == "__main__":
     app.run(
