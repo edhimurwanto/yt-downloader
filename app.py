@@ -248,8 +248,9 @@ def perform_download(download_id, url, media_type, quality):
             "max_sleep_interval": 10,
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["android", "web"],
-                    "skip": ["hls", "dash"],
+                    "player_client": ["mweb"],  # Mobile web client
+                    "player_skip": ["configs"],  # Skip configs
+                    "skip": ["hls", "dash"],    # Skip problematic formats
                 }
             },
             "headers": {
