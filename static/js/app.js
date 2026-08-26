@@ -584,3 +584,105 @@ urlInput.addEventListener(
 
     }
 );
+
+// ============================================================
+// Support / Donation Modal
+// ============================================================
+
+const supportBtn =
+    document.getElementById(
+        "supportBtn"
+    );
+
+const supportModal =
+    document.getElementById(
+        "supportModal"
+    );
+
+const closeSupportModal =
+    document.getElementById(
+        "closeSupportModal"
+    );
+
+const supportBackdrop =
+    document.getElementById(
+        "supportBackdrop"
+    );
+
+
+// ============================================================
+// Open Modal
+// ============================================================
+
+function openSupportModal() {
+
+    supportModal.classList.remove(
+        "hidden"
+    );
+
+    // Prevent background scrolling
+    document.body.classList.add(
+        "overflow-hidden"
+    );
+}
+
+
+// ============================================================
+// Close Modal
+// ============================================================
+
+function closeSupportModalHandler() {
+
+    supportModal.classList.add(
+        "hidden"
+    );
+
+    // Restore background scrolling
+    document.body.classList.remove(
+        "overflow-hidden"
+    );
+}
+
+
+// ============================================================
+// Event Listeners
+// ============================================================
+
+supportBtn.addEventListener(
+    "click",
+    openSupportModal
+);
+
+
+closeSupportModal.addEventListener(
+    "click",
+    closeSupportModalHandler
+);
+
+
+supportBackdrop.addEventListener(
+    "click",
+    closeSupportModalHandler
+);
+
+
+// ============================================================
+// Close with ESC
+// ============================================================
+
+document.addEventListener(
+    "keydown",
+    (event) => {
+
+        if (
+            event.key === "Escape" &&
+            !supportModal.classList.contains(
+                "hidden"
+            )
+        ) {
+
+            closeSupportModalHandler();
+        }
+
+    }
+);
