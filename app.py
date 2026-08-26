@@ -355,10 +355,10 @@ def perform_download(download_id, url, media_type, quality):
             "progress": 0,
         })
         
-        # Get validated cookie file
+        # Get writable cookie file
         cookie_file = get_cookie_file()
         
-        # Common options for both audio and video
+        # Base options (same as before)
         base_opts = {
             "outtmpl": output_template,
             "noplaylist": True,
@@ -368,8 +368,7 @@ def perform_download(download_id, url, media_type, quality):
             "cookiefile": cookie_file,
             "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "progress_hooks": [progress_hook(download_id)],
-            # Anti-bot detection options
-            "sleep_interval": 5,  # Wait 5 seconds between requests
+            "sleep_interval": 5,
             "max_sleep_interval": 10,
             "extractor_args": {
                 "youtube": {
@@ -377,7 +376,6 @@ def perform_download(download_id, url, media_type, quality):
                     "skip": ["hls", "dash"],
                 }
             },
-            # Additional headers to mimic a real browser
             "headers": {
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.5",
@@ -400,14 +398,27 @@ def perform_download(download_id, url, media_type, quality):
                 ],
             }
         else:
+            # Better format selection with fallbacks
+            quality_map = {
+                "1080": "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+                "720": "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+                "480": "bestvideo[height<=480]+bestaudio/best[height<=480]/best",
+                "360": "bestvideo[height<=360]+bestaudio/best[height<=360]/best",
+            }
+            
+            format_spec = quality_map.get(quality, "bestvideo+bestaudio/best")
+            
+            # Alternative: Try multiple fallbacks
+            # format_spec = f"bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best"
+            
             ydl_opts = {
                 **base_opts,
-                "format": f"bestvideo[height<={quality}]+bestaudio/best[height<={quality}]",
+                "format": format_spec,
                 "merge_output_format": "mp4",
             }
         
-        # Debug: Print cookie status
-        print(f"[DOWNLOAD] Cookie file used: {cookie_file}")
+        print(f"[DOWNLOAD] Using format: {ydl_opts.get('format', 'default')}")
+        print(f"[DOWNLOAD] Cookie file: {cookie_file}")
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
