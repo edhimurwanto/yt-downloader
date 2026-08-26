@@ -311,50 +311,25 @@ def get_cookie_file():
 # yt-dlp Common Options
 # =========================================================
 
-def get_common_ydl_options(
-    download_id=None
-):
-    """
-    Common yt-dlp options used by both the info and
-    download endpoints.
-    """
+def get_common_ydl_options(download_id=None):
 
     cookie_file = get_cookie_file()
 
     options = {
-
-        # -------------------------------------------------
-        # Playlist
-        # -------------------------------------------------
-
         "noplaylist": True,
 
-        # -------------------------------------------------
-        # Logging
-        # -------------------------------------------------
-
-        "quiet": True,
+        "quiet": False,
 
         "no_warnings": False,
 
-        # -------------------------------------------------
-        # SSL
-        # -------------------------------------------------
-
         "ca_certs": certifi.where(),
 
-        # -------------------------------------------------
-        # HTTP headers
-        # -------------------------------------------------
-
         "http_headers": {
-
             "User-Agent": (
-                "Mozilla/5.0 "
-                "(Macintosh; Intel Mac OS X 10_15_7) "
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 "
                 "(KHTML, like Gecko) "
-                "Chrome/150.0.0.0 "
+                "Chrome/131.0.0.0 "
                 "Safari/537.36"
             ),
 
@@ -363,47 +338,33 @@ def get_common_ydl_options(
             ),
         },
 
-        # -------------------------------------------------
-        # Retry configuration
-        # -------------------------------------------------
-
         "retries": 3,
 
         "fragment_retries": 3,
 
-        # -------------------------------------------------
-        # Request interval
-        # -------------------------------------------------
+        "extractor_retries": 3,
+
+        "file_access_retries": 3,
 
         "sleep_interval": 1,
 
         "max_sleep_interval": 3,
     }
 
-    # -----------------------------------------------------
-    # Only add cookiefile if available
-    # -----------------------------------------------------
-
     if cookie_file:
 
-        options["cookiefile"] = (
-            cookie_file
-        )
+        options["cookiefile"] = cookie_file
 
         logger.info(
-            "[YTDLP] Cookie file: "
+            "[YTDLP] Using cookies: "
             f"{cookie_file}"
         )
 
     else:
 
         logger.warning(
-            "[YTDLP] No cookie file configured."
+            "[YTDLP] No cookies available."
         )
-
-    # -----------------------------------------------------
-    # Progress hook
-    # -----------------------------------------------------
 
     if download_id:
 
@@ -412,8 +373,7 @@ def get_common_ydl_options(
         ]
 
     return options
-
-
+    
 # =========================================================
 # Video Info
 # =========================================================
@@ -1501,6 +1461,23 @@ def debug_cookie():
 
         }), 500
 
+@app.get("/api/debug/ytdlp")
+def debug_ytdlp():
+
+    try:
+
+        return jsonify({
+            "success": True,
+            "yt_dlp_version": yt_dlp.version.__version__,
+            "python_version": os.sys.version,
+        })
+
+    except Exception as e:
+
+        return jsonify({
+            "success": False,
+            "error": str(e),
+        }), 500
 
 # =========================================================
 # Application Startup
