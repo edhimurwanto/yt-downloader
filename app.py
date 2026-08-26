@@ -248,9 +248,11 @@ def perform_download(download_id, url, media_type, quality):
             "max_sleep_interval": 10,
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["mweb"],  # Mobile web client
-                    "player_skip": ["configs"],  # Skip configs
-                    "skip": ["hls", "dash"],    # Skip problematic formats
+                    "player_client": ["tv", "mweb"],
+                    "player_skip": ["webpage", "configs"],
+                },
+                "youtubepot": {
+                    "provider": ["wpc"],
                 }
             },
             "headers": {
