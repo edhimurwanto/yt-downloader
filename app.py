@@ -1,4 +1,6 @@
 import os
+import tempfile
+import shutil
 import uuid
 import threading
 
@@ -41,43 +43,59 @@ downloads = {}
 # =========================================================
 
 def get_cookie_file():
-    """Return validated cookie file path or None if invalid."""
-    # Check possible cookie file locations
-    possible_paths = [
-        Path("/etc/secrets/cookies.txt"),  # Render secrets
+    """
+    Return a path to a writable cookie file.
+    Copies from read-only secrets location if needed.
+    """
+    # Check possible source locations
+    source_paths = [
+        Path("/etc/secrets/cookies.txt"),  # Render secrets (read-only)
         BASE_DIR / "cookies.txt",           # Local development
     ]
     
-    for cookie_path in possible_paths:
-        if not cookie_path.exists():
+    for source_path in source_paths:
+        if not source_path.exists():
             continue
             
         try:
-            # Read and validate the cookie file
-            with open(cookie_path, 'r', encoding='utf-8') as f:
+            # Validate the cookie file first
+            with open(source_path, 'r', encoding='utf-8') as f:
                 first_line = f.readline().strip()
                 content = f.read().strip()
                 
-                # Check if it's in Netscape format
                 if not (first_line.startswith('# HTTP Cookie File') or 
                         first_line.startswith('# Netscape HTTP Cookie File')):
-                    print(f"[COOKIE] WARNING: {cookie_path} is not in Netscape format")
+                    print(f"[COOKIE] WARNING: {source_path} is not in Netscape format")
                     continue
-                
+                    
                 if not content:
-                    print(f"[COOKIE] WARNING: {cookie_path} is empty")
+                    print(f"[COOKIE] WARNING: {source_path} is empty")
                     continue
-                
-                # Check for essential YouTube cookies
+                    
                 if 'youtube.com' not in content.lower():
-                    print(f"[COOKIE] WARNING: {cookie_path} doesn't contain YouTube cookies")
+                    print(f"[COOKIE] WARNING: {source_path} doesn't contain YouTube cookies")
                     continue
+            
+            # If we're on Render (source is in /etc/secrets/), copy to writable location
+            if str(source_path).startswith('/etc/secrets/'):
+                # Create a writable copy in the downloads directory
+                writable_path = DOWNLOAD_DIR / "cookies.txt"
                 
-                print(f"[COOKIE] Successfully validated: {cookie_path}")
-                return str(cookie_path)
+                # Copy the file
+                shutil.copy2(source_path, writable_path)
+                
+                # Make it writable (just in case)
+                writable_path.chmod(0o644)
+                
+                print(f"[COOKIE] Copied from {source_path} to {writable_path}")
+                return str(writable_path)
+            else:
+                # Local file - use it directly if it's writable
+                print(f"[COOKIE] Using local file: {source_path}")
+                return str(source_path)
                 
         except Exception as e:
-            print(f"[COOKIE] Error reading {cookie_path}: {e}")
+            print(f"[COOKIE] Error processing {source_path}: {e}")
             continue
     
     print("[COOKIE] No valid cookie file found")
@@ -98,6 +116,16 @@ def cleanup_old_files():
             for file_path in DOWNLOAD_DIR.iterdir():
 
                 if not file_path.is_file():
+                    continue
+
+                if file_path.name == "cookies.txt":
+                    # Check if it's older than 1 hour
+                    if (now - file_path.stat().st_mtime) > 3600:  # 1 hour
+                        try:
+                            file_path.unlink()
+                            print(f"[CLEANUP] Deleted old cookie file: {file_path.name}")
+                        except Exception as e:
+                            print(f"[CLEANUP] Failed to delete cookie file: {e}")
                     continue
 
                 file_age = (
